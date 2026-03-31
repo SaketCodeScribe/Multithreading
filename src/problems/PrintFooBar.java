@@ -147,7 +147,7 @@ class FooBarWithWithConditionVariables{
             barTurn = true;
             bar.signal();
         } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            Thread.currentThread().interrupt();
         } finally {
             lock.unlock();
         }
@@ -162,7 +162,7 @@ class FooBarWithWithConditionVariables{
             barTurn = false;
             foo.signal();
         } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            Thread.currentThread().interrupt();
         }
         finally {
             lock.unlock();
