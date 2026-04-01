@@ -2,6 +2,7 @@ package problems;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -10,12 +11,33 @@ public class PrintZeroEvenOdd {
     public static void main(String[] args) throws InterruptedException {
         ExecutorService executors = Executors.newFixedThreadPool(3);
         System.out.println("Print Zero Even Odd using condition variables");
-        zeroEvenOdd(executors);
+        zeroEvenOddWithCV(executors);
         Thread.sleep(1000);
+        System.out.println("\n\nPrint Zero Even Odd using semaphores");
+        zeroEvenOddWithSemaphores(executors);
         executors.shutdown();
     }
 
-    private static void zeroEvenOdd(ExecutorService executors) {
+    private static void zeroEvenOddWithSemaphores(ExecutorService executors) {
+        ZeroEvenOddWithSemaphores obj = new ZeroEvenOddWithSemaphores();
+        executors.submit(() -> {
+            for(int i=1; i<=40; i++){
+                obj.runZero();
+            }
+        });
+        executors.submit(() -> {
+            for(int i=1; i<=20; i++){
+                obj.runOdd();
+            }
+        });
+        executors.submit(() -> {
+            for(int i=1; i<=20; i++){
+                obj.runEven();
+            }
+        });
+    }
+
+    private static void zeroEvenOddWithCV(ExecutorService executors) {
         ZeroEvenOddWithConditionVariable obj = new ZeroEvenOddWithConditionVariable();
         executors.submit(() -> {
             for(int i=1; i<=10; i++){
@@ -33,6 +55,49 @@ public class PrintZeroEvenOdd {
             }
         });
     }
+}
+class ZeroEvenOddWithSemaphores{
+    private int phase = 1;
+    private Lock lock = new ReentrantLock();
+    private Semaphore zeroPermit = new Semaphore(1);
+    private Semaphore evenPermit = new Semaphore(0);
+    private Semaphore oddPermit = new Semaphore(0);
+
+    public void runZero(){
+        try{
+            zeroPermit.acquire();
+            System.out.print(0);
+            if (phase%2 != 0){
+                oddPermit.release();
+            }
+            else{
+                evenPermit.release();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+    public void runEven(){
+        try{
+            evenPermit.acquire();
+            System.out.print(phase);
+            phase++;
+            zeroPermit.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+    public void runOdd(){
+        try{
+            oddPermit.acquire();
+            System.out.print(phase);
+            phase++;
+            zeroPermit.release();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
 }
 class ZeroEvenOddWithConditionVariable{
     private int phase = 1;
