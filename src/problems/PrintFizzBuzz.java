@@ -4,6 +4,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class PrintFizzBuzz {
     public static void main(String[] args) throws InterruptedException {
@@ -11,7 +14,25 @@ public class PrintFizzBuzz {
         System.out.println("Print fizBuzzNumber using semaphores");
         fizzBuzzUsingSemaphore(executors);
         Thread.sleep(1000);
+        System.out.println("\n\nPrint fizBuzzNumber using semaphores");
+        fizzBuzzUsingCV(executors);
         executors.shutdown();
+    }
+
+    private static void fizzBuzzUsingCV(ExecutorService executors) {
+        FizzBuzzWithSemaphores obj = new FizzBuzzWithSemaphores(20);
+        executors.submit(() -> {
+            obj.number();
+        });
+        executors.submit(() -> {
+            obj.fizz();
+        });
+        executors.submit(() -> {
+            obj.buzz();
+        });
+        executors.submit(() -> {
+            obj.fizzBuzz();
+        });
     }
 
     private static void fizzBuzzUsingSemaphore(ExecutorService executors) {
@@ -116,3 +137,87 @@ class FizzBuzzWithSemaphores{
         }
     }
 }
+
+class FizzBuzzWithConditionVariable{
+    private int state = 1;
+    private final int num;
+
+    private Lock lock = new ReentrantLock();
+    private Condition condition = lock.newCondition();
+    public FizzBuzzWithConditionVariable(int num){
+        this.num = num;
+    }
+    public void number(){
+        lock.lock();
+        try {
+            while(state <= num) {
+                while (!(state % 3 == 0 || state % 5 == 0)){
+                    condition.await();
+                    if (state > num) return;
+                }
+                System.out.print(++state + ",");
+                condition.signalAll();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finally {
+            lock.unlock();
+        }
+    }
+    public void fizz(){
+        lock.lock();
+        try {
+            while(state <= num) {
+                while (!(state % 3 == 0 && state % 5 != 0)){
+                    condition.await();
+                    if (state > num) return;
+                }
+                System.out.print("fizz,");
+                condition.signalAll();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finally {
+            lock.unlock();
+        }
+    }
+    public void buzz(){
+        lock.lock();
+        try {
+            while(state <= num) {
+                while (!(state%3 != 0 && state % 5 == 0)){
+                    condition.await();
+                    if (state > num) return;
+                }
+                System.out.print("buzz,");
+                condition.signalAll();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finally {
+            lock.unlock();
+        }
+    }
+    public void fizzBuzz(){
+        lock.lock();
+        try {
+            while(state <= num) {
+                while (state % 15 != 0){
+                    condition.await();
+                    if (state > num) return;
+                }
+                System.out.print("fizzBuzz,");
+                condition.signalAll();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finally {
+            lock.unlock();
+        }
+    }
+}
+
