@@ -1,56 +1,70 @@
 package problems;
 
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.*;
 
 public class PrintH2O {
     public static void main(String[] args) throws InterruptedException {
-        ExecutorService executors = Executors.newFixedThreadPool(2);
-        System.out.println("Print H2O using barriers");
-        h2oWithBarrier(executors);
-        Thread.sleep(1000);
+        ExecutorService executors = Executors.newFixedThreadPool(9);
+        System.out.println("Print H2O with Barrier");
+        printH2OWithBarrier(executors);
         executors.shutdown();
     }
 
-    private static void h2oWithBarrier(ExecutorService executors) {
+    private static void printH2OWithBarrier(ExecutorService executors) {
         H2OWithBarrier obj = new H2OWithBarrier();
         executors.submit(() -> {
-            for(char atom:new char[]{'H','H','H','H','H','H'}){
-                obj.createH2OMolecule(atom);
-            }
+            obj.hydrogen();
         });
         executors.submit(() -> {
-            for(char atom:new char[]{'O','O','O'}){
-                obj.createH2OMolecule(atom);
-            }
+            obj.oxygen();
         });
-
+        executors.submit(() -> {
+            obj.oxygen();
+        });
+        executors.submit(() -> {
+            obj.hydrogen();
+        });
+        executors.submit(() -> {
+            obj.hydrogen();
+        });
+        executors.submit(() -> {
+            obj.hydrogen();
+        });
+        executors.submit(() -> {
+            obj.oxygen();
+        });
+        executors.submit(() -> {
+            obj.hydrogen();
+        });
+        executors.submit(() -> {
+            obj.hydrogen();
+        });
     }
+
 }
 class H2OWithBarrier{
-    CyclicBarrier barrier = new CyclicBarrier(2, () -> System.out.println("Water molecule created!!"));
-    int hydrogen = 0;
-   int oxygen = 0;
+    private Semaphore hydrogenPermit = new Semaphore(2);
+    private Semaphore oxygenPermit = new Semaphore(1);
+    private CyclicBarrier barrier = new CyclicBarrier(3, () -> {
+        System.out.println("Water molecule created!!");
+        hydrogenPermit.release(2);
+        oxygenPermit.release();
+    });
 
-    public void createH2OMolecule(char atom){
-        try {
-            if (atom == 'H'){
-                hydrogen++;
-                if (hydrogen > 0 && hydrogen %2 == 0){
-                        barrier.await();
-                        hydrogen -= 2;
-                }
-            }
-            else{
-                oxygen++;
-                barrier.await();
-                oxygen--;
-            }
-        } catch (InterruptedException | BrokenBarrierException e) {
-            Thread.currentThread().interrupt();
+    public void hydrogen(){
+        try{
+            hydrogenPermit.acquire();
+            barrier.await();
+        } catch (BrokenBarrierException | InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+    }
+    public void oxygen(){
+        try{
+            oxygenPermit.acquire();
+            barrier.await();
+        } catch (BrokenBarrierException | InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 }
