@@ -7,6 +7,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class ReaderWriterProblem {
 }
 
+
 // Read heavy application
 class ReaderHeavy{
     private int readerCount = 0;
