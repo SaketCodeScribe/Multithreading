@@ -1,7 +1,6 @@
 package problems;
 
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -9,7 +8,7 @@ public class ReaderWriterProblem {
 }
 
 // Read heavy application
-class ConcurrentReader{
+class ReaderHeavy{
     private int readerCount = 0;
     private Lock lock = new ReentrantLock();
     private Semaphore resourceAccess = new Semaphore(1);
@@ -47,13 +46,9 @@ class ConcurrentReader{
         resourceAccess.release();
     }
     public void readResource(Runnable task){
-        try {
-            readAcquire();
-            task.run();
-            readRelease();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
+        readAcquire();
+        task.run();
+        readRelease();
     }
     public void writeResource(Runnable task){
         try {
@@ -61,7 +56,85 @@ class ConcurrentReader{
             task.run();
             writeRelease();
         } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+
+class WriterHeavy{
+    private int readerCnt = 0;
+    private int writerCnt = 0;
+    private Lock readerLock = new ReentrantLock();
+    private Lock writerLock = new ReentrantLock();
+    private Semaphore resource = new Semaphore(1);
+    private Semaphore readTry = new Semaphore(1);
+
+    private void readAcquire() throws InterruptedException {
+        readTry.acquire();
+        try{
+            readerLock.lock();
+            try {
+                readerCnt++;
+                if (readerCnt == 1) {
+                    resource.acquire();
+                }
+            }
+            finally {
+                readerLock.unlock();
+            }
+        }
+        finally {
+            readTry.release();
+        }
+    }
+    private void readRelease() {
+        readerLock.lock();
+        if (--readerCnt == 0){
+            resource.release();
+        }
+        readerLock.unlock();
+    }
+    public void readResource(Runnable task){
+        try {
+            readAcquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        task.run();
+        readRelease();
+    }
+
+    public void writeResource(Runnable task){
+        try {
+            writeAcquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        task.run();
+        writeRelease();
+    }
+
+    private void writeAcquire() throws InterruptedException {
+        writerLock.lock();
+        try{
+            writerCnt++;
+            if (writerCnt == 1){
+                readTry.acquire();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        finally {
+            writerLock.unlock();
+        }
+        resource.acquire();
+    }
+
+    private void writeRelease() {
+        writerLock.lock();
+        if (--writerCnt == 0){
+            readTry.release();
+            resource.release();
         }
     }
 }
