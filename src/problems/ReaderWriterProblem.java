@@ -138,3 +138,52 @@ class WriterHeavy{
         }
     }
 }
+class FairReadWrite{
+    private int readCount = 0;
+    private Lock lock = new ReentrantLock();
+    private Semaphore resource = new Semaphore(1);
+    private Semaphore serviceQueue = new Semaphore(1, true);
+
+    private void readAcquire(){
+        try {
+            serviceQueue.acquire();
+            lock.lock();
+            try{
+                if (++readCount == 1){
+                    resource.acquire();
+                }
+            }
+            catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        finally {
+            lock.unlock();
+            serviceQueue.release();
+        }
+    }
+    private void readRelease(){
+        lock.lock();
+        if (--readCount == 0){
+            resource.release();
+        }
+    }
+    public void readResource(Runnable task){
+        readAcquire();
+        task.run();
+        readRelease();
+    }
+    public void writeResource(Runnable task) {
+        try {
+            serviceQueue.acquire();
+            resource.acquire();
+            task.run();
+        }catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
+        resource.release();
+        serviceQueue.release();
+    }
+}
