@@ -17,7 +17,6 @@ public class PrintZeroEvenOdd {
         zeroEvenOddWithSemaphores(executors);
         executors.shutdown();
     }
-
     private static void zeroEvenOddWithSemaphores(ExecutorService executors) {
         ZeroEvenOddWithSemaphores obj = new ZeroEvenOddWithSemaphores();
         executors.submit(() -> {
