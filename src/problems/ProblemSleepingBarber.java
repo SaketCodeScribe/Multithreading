@@ -17,7 +17,7 @@ class SleepingSingleBarberWithSemaphores<T>{
     private Lock lock;
     private Condition condition;
 
-    public SleepingBarberWithSemaphores(int size){
+    public SleepingSingleBarberWithSemaphores(int size){
         chair = new Semaphore(size, true);
         lock = new ReentrantLock();
         condition = lock.newCondition();
