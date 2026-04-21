@@ -11,50 +11,87 @@ import java.util.function.Consumer;
 public class ProblemSleepingBarber {
 }
 
-class SleepingBarberWithSemaphores<T>{
+class SleepingSingleBarberWithSemaphores<T>{
     Queue<T> queue;
-    private Semaphore empty;
-    private Semaphore mutex;
-    private Condition emptyCondition;
+    private Semaphore chair;
     private Lock lock;
+    private Condition condition;
 
     public SleepingBarberWithSemaphores(int size){
-        empty = new Semaphore(size, true);
-        mutex = new Semaphore(1);
+        chair = new Semaphore(size, true);
         lock = new ReentrantLock();
+        condition = lock.newCondition();
         queue = new LinkedList<>();
-        emptyCondition = lock.newCondition();
     }
     public void cutHair(Consumer<T> consumer) throws InterruptedException {
-        lock.lock();
-        try{
-            while(true){
-                if (!queue.isEmpty()) {
-                    mutex.acquire();
-                    try {
-                        consumer.accept(queue.poll());
-                        empty.release();
-                    } finally {
-                        mutex.release();
-                    }
+        while(true){
+            lock.lock();
+            T customer;
+            try {
+                while (queue.isEmpty()) {
+                    condition.await();
                 }
-                else {
-                    emptyCondition.await();
-                }
+                customer = queue.poll();
+                chair.release();
+            } finally {
+                lock.unlock();
             }
-        }finally {
-            lock.unlock();
+            consumer.accept(customer);
         }
     }
     public boolean customerArrives(T data) throws InterruptedException {
-        if (!empty.tryAcquire()) {
-            return false; // no seats, customer leaves
-        }
+        if (!chair.tryAcquire()) return false;
+
         lock.lock();
         try{
-            empty.acquire();
             queue.offer(data);
-            emptyCondition.signal();
+            condition.signal();
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+
+class SleepingMBarberWithSemaphores<T>{
+    Queue<T> queue;
+    private Semaphore chair;
+    private Semaphore barber;
+    private Lock lock;
+    private Condition condition;
+
+    public SleepingMBarberWithSemaphores(int size, int barbers){
+        chair = new Semaphore(size, true);
+        barber = new Semaphore(barbers, true);
+        lock = new ReentrantLock();
+        condition = lock.newCondition();
+        queue = new LinkedList<>();
+    }
+    public void cutHair(Consumer<T> consumer) throws InterruptedException {
+        while(true){
+            barber.acquire();
+            lock.lock();
+            T customer;
+            try {
+                while (queue.isEmpty()) {
+                    condition.await();
+                }
+                customer = queue.poll();
+                chair.release();
+            } finally {
+                lock.unlock();
+            }
+            consumer.accept(customer);
+            barber.release();
+        }
+    }
+    public boolean customerArrives(T data) throws InterruptedException {
+        if (!chair.tryAcquire()) return false;
+
+        lock.lock();
+        try{
+            queue.offer(data);
+            condition.signalAll();
             return true;
         } finally {
             lock.unlock();
