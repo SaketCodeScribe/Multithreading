@@ -13,9 +13,9 @@ public class ProblemSleepingBarber {
 
 class SleepingSingleBarberWithSemaphores<T>{
     Queue<T> queue;
-    private Semaphore chair;
-    private Lock lock;
-    private Condition condition;
+    private final Semaphore chair;
+    private final Lock lock;
+    private final Condition condition;
 
     public SleepingSingleBarberWithSemaphores(int size){
         chair = new Semaphore(size, true);
@@ -55,10 +55,10 @@ class SleepingSingleBarberWithSemaphores<T>{
 
 class SleepingMBarberWithSemaphores<T>{
     Queue<T> queue;
-    private Semaphore chair;
-    private Semaphore barber;
-    private Lock lock;
-    private Condition condition;
+    private final Semaphore chair;
+    private final Semaphore barber;
+    private final Lock lock;
+    private final Condition condition;
 
     public SleepingMBarberWithSemaphores(int size, int barbers){
         chair = new Semaphore(size, true);
