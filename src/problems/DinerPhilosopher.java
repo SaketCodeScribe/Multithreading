@@ -1,74 +1,82 @@
 package problems;
 
-import java.util.LinkedList;
-import java.util.Queue;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 public class DinerPhilosopher {
-    static class Pair<K, V>{
-        K key;
-        V value;
+}
 
-        public Pair(K id, V eat) {
-            key = id;
-            value = eat;
-        }
-    }
+class DinerPhilosopherWithResourceHierarchy{
+
     private Semaphore[] forks;
     private int numberOfPhilosopher;
-    private Queue<Pair<Integer, Runnable>> queue;
-    private Lock lock;
-    public DinerPhilosopher(int n){
+    public DinerPhilosopherWithResourceHierarchy(int n){
         forks = new Semaphore[n];
         for(int i=0; i<n; i++){
             forks[i] = new Semaphore(1, true);
         }
         numberOfPhilosopher = n;
-        queue = new LinkedList<>();
-        lock = new ReentrantLock();
     }
 
     public void philosopher(int id, Runnable eat) throws InterruptedException {
-        thinking(id);
-        lock.lock();
-        try{
-            queue.offer(new Pair<>(id, eat));
-        }
-        finally {
-            lock.unlock();
+        int minFork = Math.min(id, (id + 1) % numberOfPhilosopher);
+        int maxFork = Math.max(id, (id + 1) % numberOfPhilosopher);
+
+        while (true) {
+            thinking(id);
+            forks[minFork].acquire();
+            try {
+                forks[maxFork].acquire();
+                try {
+                    eat.run();
+                } finally {
+                    forks[maxFork].release();
+                }
+            } finally {
+                forks[minFork].release();
+            }
         }
     }
 
     private void thinking(int id) {
 
     }
+}
 
-    private void eat(){
-        lock.lock();
-        try {
-            while (!queue.isEmpty()) {
-                Pair<Integer, Runnable> data = queue.poll();
-                int id = data.key;
-                int prev = id;
-                int next = (prev+1)%numberOfPhilosopher;
-                if (forks[prev].tryAcquire()){
-                    if (forks[next].tryAcquire()) {
-                        data.value.run();
-                        forks[next].release();
-                    }
-                    else{
-                        queue.offer(data);
-                    }
-                    forks[prev].release();
-                }
-                else{
-                    queue.offer(data);
-                }
-            }
-        } finally {
-            lock.unlock();
+class DinerPhilosopherWithWaiterCoordination{
+    private Semaphore[] forks;
+    private int numOfPhilosopher;
+    private Semaphore coordinator;
+
+    public DinerPhilosopherWithWaiterCoordination(int numOfPhilosopher) {
+        this.numOfPhilosopher = numOfPhilosopher;
+        forks = new Semaphore[numOfPhilosopher];
+        for (int i = 0; i < numOfPhilosopher; i++) {
+            forks[i] = new Semaphore(1, true);
         }
+        coordinator = new Semaphore(numOfPhilosopher-1, true);
+    }
+
+    public void philosopher(int id, Runnable eat){
+        int right = (id+1)%numOfPhilosopher;
+
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                thinking(id);
+                coordinator.acquire();
+                forks[id].acquire();
+            forks[right].acquire();
+                    eat.run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                forks[id].release();
+                forks[right].release();
+                coordinator.release();
+            }
+        }
+    }
+
+    private void thinking(int id) throws InterruptedException {
+        Thread.sleep(10000);
     }
 }
