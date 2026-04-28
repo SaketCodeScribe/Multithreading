@@ -64,7 +64,7 @@ class DinerPhilosopherWithWaiterCoordination{
                 thinking(id);
                 coordinator.acquire();
                 forks[id].acquire();
-            forks[right].acquire();
+                forks[right].acquire();
                     eat.run();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
