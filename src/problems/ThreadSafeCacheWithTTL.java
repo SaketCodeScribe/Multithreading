@@ -11,8 +11,8 @@ import java.util.concurrent.TimeUnit;
 
 public class ThreadSafeCacheWithTTL<K,V> {
     static class CacheEntry<R>{
-        R data;
-        Long expiryTime;
+        final R data;
+        final Long expiryTime;
 
         public CacheEntry(R data, Long expiryTime) {
             this.data = data;
@@ -25,7 +25,6 @@ public class ThreadSafeCacheWithTTL<K,V> {
     private final Semaphore mutex;
     private final Semaphore resource;
     private int readerCnt;
-    private long startTime;
     private final long TTL;
     private final ScheduledExecutorService cleaner = Executors.newSingleThreadScheduledExecutor();
     public ThreadSafeCacheWithTTL(long ttlMillis) {
@@ -35,7 +34,6 @@ public class ThreadSafeCacheWithTTL<K,V> {
         this.mutex = new Semaphore(1);
         this.service = new Semaphore(1, true);
         TTL = ttlMillis;
-        startTime = -1;
         cleaner.scheduleWithFixedDelay(this::cleanUp, ttlMillis, ttlMillis, TimeUnit.MILLISECONDS);
 
 
@@ -49,7 +47,6 @@ public class ThreadSafeCacheWithTTL<K,V> {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } finally {
-            mutex.release();
             releaseReadResource();
         }
         if (value == null){
@@ -82,8 +79,12 @@ public class ThreadSafeCacheWithTTL<K,V> {
     }
 
     private void releaseReadResource() {
-        if (readerCnt-- == 1) {
-            resource.release();
+        try {
+            if (--readerCnt == 0) {
+                resource.release();
+            }
+        } finally {
+            mutex.release();
         }
     }
 
@@ -100,40 +101,45 @@ public class ThreadSafeCacheWithTTL<K,V> {
     }
 
     private void cleanUp() {
+        boolean serviceAcquired = false;
+        boolean mutexAcquired = false;
+        boolean resourceAcquired = false;
+
         try {
             service.acquire();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            shutdown();
-        }
-        try {
+            serviceAcquired = true;
+
             mutex.acquire();
-            if (startTime == -1) {
-                startTime = System.currentTimeMillis();
-            } else {
-                if (System.currentTimeMillis() - startTime >= TTL) {
-                    resource.acquire();
-                    try {
-                        drain();
-                        startTime = -1;
-                    } finally {
-                        resource.release();
-                    }
-                }
-            }
+            mutexAcquired = true;
+
+            resource.acquire();
+            resourceAcquired = true;
+
+            drain();
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             shutdown();
+            return;
         } finally {
-            mutex.release();
-            service.release();
+            if (resourceAcquired) {
+                resource.release();
+            }
+
+            if (mutexAcquired) {
+                mutex.release();
+            }
+
+            if (serviceAcquired) {
+                service.release();
+            }
         }
     }
 
     private void drain() {
         while (!buffer.isEmpty() && buffer.peek().expiryTime < System.currentTimeMillis()) {
             CacheEntry<K> entry = buffer.poll();
-            if (entry != null && Long.compare(entryMap.get(entry.data).expiryTime, entry.expiryTime) == 0) {
+            if (entry != null && entryMap.containsKey(entry.data) && Long.compare(entryMap.get(entry.data).expiryTime, entry.expiryTime) == 0) {
                 entryMap.remove(entry.data);
             }
         }
