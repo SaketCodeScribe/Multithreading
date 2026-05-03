@@ -4,29 +4,25 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 
 public class ThreadSafeCacheWithTTL<K,V> {
-    static class Pair<R>{
+    static class CacheEntry<R>{
         R data;
         Long expiryTime;
 
-        public Pair(R data, Long expiryTime) {
+        public CacheEntry(R data, Long expiryTime) {
             this.data = data;
             this.expiryTime = expiryTime;
         }
     }
-    private final ExecutorService cleanUpExecutor = Executors.newSingleThreadExecutor();
-    private final Map<K,Pair<V>> entryMap;
-    private final Queue<Pair<K>> buffer;
+    private final Map<K, CacheEntry<V>> entryMap;
+    private final Queue<CacheEntry<K>> buffer;
     private final Semaphore service;
     private final Semaphore mutex;
     private final Semaphore resource;
     private int readerCnt;
     private long startTime;
-    private final int LIMIT = 10;
     private final long TTL;
     public ThreadSafeCacheWithTTL(long ttl) {
         this.entryMap = new HashMap<>();
@@ -39,13 +35,15 @@ public class ThreadSafeCacheWithTTL<K,V> {
     }
 
     public V read(K key){
-        Pair<V> value = null;
+        CacheEntry<V> value = null;
         try{
             readResourceAcquire();
             value = entryMap.get(key);
-            releaseReadResource();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } finally {
+            mutex.release();
+            releaseReadResource();
         }
         if (value == null){
             return null;
@@ -53,52 +51,41 @@ public class ThreadSafeCacheWithTTL<K,V> {
         return value.expiryTime < System.currentTimeMillis() ? null : value.data;
     }
 
-    private void releaseReadResource() throws InterruptedException {
-        service.acquire();
-        cleanUp();
-        mutex.acquire();
-        if (readerCnt-- == 1){
-            resource.release();
-        }
-        mutex.release();
-        service.release();
-    }
-
-    private void cleanUp() throws InterruptedException {
-        if (startTime == -1){
-            startTime = System.currentTimeMillis();
-        } else {
-            long elaspedTime = System.currentTimeMillis() - startTime;
-            if (elaspedTime >= TTL) {
-                try {
-                    this.cleanUpExecutor.execute(this::drain);
-                    startTime = -1;
-                } catch (RuntimeException e) {
-                    Thread.currentThread().interrupt();
-                    throw new InterruptedException(e.getMessage());
-                }
-            }
+    public void write(K key, V value) throws InterruptedException {
+        try{
+            writeResourceAcquire();
+            long timestamp = System.currentTimeMillis() + TTL;
+            entryMap.put(key, new CacheEntry<>(value, timestamp));
+            buffer.offer(new CacheEntry<>(key, timestamp));
+        } finally {
+            releaseWriteResource();
         }
     }
 
     private void readResourceAcquire() throws InterruptedException {
+        service.acquire();
         mutex.acquire();
         try{
             if (readerCnt++ == 0){
                 resource.acquire();
             }
+            cleanUp();
         } finally {
-            mutex.release();
+            service.release();
         }
     }
 
-    public void write(K key, V value) throws InterruptedException {
-        writeResourceAcquire();
-        long timestamp = System.currentTimeMillis() + TTL;
+    private void releaseReadResource() {
+        if (readerCnt-- == 1) {
+            resource.release();
+        }
+    }
+
+    private void writeResourceAcquire() throws InterruptedException {
+        service.acquire();
         mutex.acquire();
-        entryMap.put(key, new Pair<>(value, timestamp));
-        buffer.offer(new Pair<>(key, timestamp));
-        releaseWriteResource();
+        resource.acquire();
+        cleanUp();
     }
 
     private void releaseWriteResource() {
@@ -107,27 +94,23 @@ public class ThreadSafeCacheWithTTL<K,V> {
         service.release();
     }
 
-    private void writeResourceAcquire() throws InterruptedException {
-        service.acquire();
-        cleanUp();
-        resource.acquire();
+    private void cleanUp() throws InterruptedException {
+        if (startTime == -1){
+            startTime = System.currentTimeMillis();
+        } else {
+            if (System.currentTimeMillis() - startTime >= TTL) {
+                drain();
+                startTime = -1;
+            }
+        }
     }
 
     private void drain() {
-        try {
-            mutex.acquire();
-        } catch (InterruptedException e) {
-            throw new RuntimeException(e);
-        }
-        try {
-            while (!buffer.isEmpty() && buffer.peek().expiryTime < System.currentTimeMillis()) {
-                Pair<K> entry = buffer.poll();
-                if (Long.compare(entryMap.get(entry.data).expiryTime, entry.expiryTime) == 0) {
-                    entryMap.remove(entry.data);
-                }
+        while (!buffer.isEmpty() && buffer.peek().expiryTime < System.currentTimeMillis()) {
+            CacheEntry<K> entry = buffer.poll();
+            if (entry != null && Long.compare(entryMap.get(entry.data).expiryTime, entry.expiryTime) == 0) {
+                entryMap.remove(entry.data);
             }
-        } finally {
-            mutex.release();
         }
     }
 }
