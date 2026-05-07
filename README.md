@@ -6,3 +6,4 @@ Covering all concurrency problems
 5. Reader Writer problem
 6. Unisex Bathroom
 7. Bounded Buffer
+8. Sleeping Buffer
