@@ -72,8 +72,8 @@ public class ThreadSafeRateLimiter {
 }
 
 class TokenBucket{
-    private AtomicLong lastRefilledTime;
-    private AtomicLong lastAccessTime;
+    private final AtomicLong lastRefilledTime;
+    private final AtomicLong lastAccessTime;
     private AtomicLong tokens;
     private final long PRECISION = 1_000_000;
     private final long capacity;
