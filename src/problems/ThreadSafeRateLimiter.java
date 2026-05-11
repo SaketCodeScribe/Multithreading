@@ -2,122 +2,89 @@ package problems;
 
 import java.time.Duration;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class ThreadSafeRateLimiter {
-    private final ConcurrentMap<String, TokenBucket> buckets;
+    private final ConcurrentMap<String, TokenBucket> buffer;
+    private final ScheduledExecutorService cleaner;
     private final RateLimiterConfig config;
-    private final ScheduledExecutorService cleanUpScheduler;
-    private AtomicBoolean running;
 
     public ThreadSafeRateLimiter(RateLimiterConfig config) {
         this.config = config;
-        this.buckets = new ConcurrentHashMap<>();
-        this.running = new AtomicBoolean(true);
-
-        this.cleanUpScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread thread = new Thread(r, "rate-limiter-cleanUp");
-            thread.setDaemon(true);
-            return thread;
+        this.buffer = new ConcurrentHashMap<>();
+        this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "cleanerThread");
+            t.setDaemon(true);
+            return t;
         });
-
-        cleanUpScheduler.scheduleAtFixedRate(
-                this::cleanupStaleBuckets,
-                config.getCleanupInterval().toMillis(),
-                config.getCleanupInterval().toMillis(),
-                TimeUnit.MILLISECONDS
-        );
+        cleaner.scheduleAtFixedRate(
+                this::cleanUp,
+                config.getCleanupInterval().toNanos(),
+                config.getCleanupInterval().toNanos(),
+                TimeUnit.NANOSECONDS);
     }
 
-    public ThreadSafeRateLimiter(double tokensPerSecond, long capacity) {
-        this(RateLimiterConfig.builder().withTokensPerSecond(tokensPerSecond).withCapacity(capacity).build());
-    }
-
-    private void cleanupStaleBuckets() {
+    private void cleanUp() {
         long now = System.nanoTime();
-        long timeOut = config.getInactivityTimeout().getNano();
-
-        buckets.entrySet().removeIf(entry -> {
-            TokenBucket tokenBucket = entry.getValue();
-            return tokenBucket.getLastAccessTime() + timeOut < now;
+        long inactivityTimeout = config.getInactivityTimeout().toNanos();
+        buffer.entrySet().removeIf(entry -> {
+           TokenBucket bucket = entry.getValue();
+            return bucket.getLastAccessTime() + inactivityTimeout < now;
         });
     }
 
-    public void serveRequest(String clientKey){
-        TokenBucket bucket = buckets.computeIfAbsent(clientKey, x -> new TokenBucket(10, 2.5d));
-        if (bucket.tryAcquire()){
-            System.out.println("Serve Request");
-        }
-        else {
-            System.out.println("Not enough bucket!!");
-        }
+    public boolean canServeRequest(String clientId){
+       TokenBucket bucket = buffer.computeIfAbsent(clientId, t -> new TokenBucket(config.getCapacity(), config.getTokensPerSecond()));
+       return bucket.tryAcquire();
     }
-
-    public void shutdown() {
-        if (running.compareAndSet(true, false)) {
-            cleanUpScheduler.shutdown();
-            try {
-                if (!cleanUpScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                    cleanUpScheduler.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                cleanUpScheduler.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-            buckets.clear();
-        }
-    }
-
 }
 
 class TokenBucket{
-    private final AtomicLong lastRefilledTime;
+    private final AtomicLong tokens;
     private final AtomicLong lastAccessTime;
-    private AtomicLong tokens;
-    private final long PRECISION = 1_000_000;
+    private final AtomicLong lastRefilledTime;
+    private final int PRECISION = 1_000_000;
     private final long capacity;
-    private final double tokenRate;
+    private final double rate;
 
-    public TokenBucket(int capacity, double tokenRate){
+    public TokenBucket(long capacity, double rate) {
         this.capacity = capacity * PRECISION;
-        this.tokenRate = tokenRate;
-        this.lastRefilledTime = new AtomicLong(System.nanoTime());
+        this.rate = rate;
+        this.tokens = new AtomicLong(this.capacity);
         this.lastAccessTime = new AtomicLong(System.nanoTime());
+        this.lastRefilledTime = new AtomicLong(System.nanoTime());
     }
+    public boolean tryAcquire(){
+        while(true){
+            long token = tokens.get();
+            long lastRefillTime = lastRefilledTime.get();;
+            long now = System.nanoTime();
+            long elapsedTime = now - lastRefillTime;
+            long newToken = Math.min(this.capacity, (long)(refill(elapsedTime) * PRECISION) + token);
 
+            if (newToken < PRECISION) return false;
+
+            long afterConsume = newToken - PRECISION;
+            if (tokens.compareAndSet(token, afterConsume)){
+                lastRefilledTime.set(now);
+                lastAccessTime.set(now);
+                return true;
+            }
+        }
+    }
 
     public long getLastAccessTime() {
         return lastAccessTime.get();
     }
 
-    public boolean tryAcquire(){
-        while(true) {
-            long token = tokens.get();
-            long now = System.nanoTime();
-            long lastRefillTime = lastRefilledTime.get();
-            long elapsedTime = now - lastRefillTime;
-            long newTokens = Math.min(capacity, refill(elapsedTime) + token);
-
-            if (newTokens < PRECISION){
-                return false;
-            }
-            long afterConsume = newTokens - PRECISION;
-
-            if (tokens.compareAndSet(token, afterConsume)){
-                lastRefilledTime.compareAndSet(lastRefillTime, now);
-                lastAccessTime.set(now);
-                return true;
-            }
-        }
-
+    private double refill(long elapsedTime) {
+        return rate * elapsedTime;
     }
 
-    private long refill(long elapsed){
-        return (long)(elapsed / 1_000_000_000 * tokenRate);
+    public String TokenInfo(){
+        return "["+tokens.get()+", "+lastRefilledTime.get()+"]";
     }
 }
-
 class RateLimiterConfig{
     private final double tokensPerSecond;
     private final long capacity;
