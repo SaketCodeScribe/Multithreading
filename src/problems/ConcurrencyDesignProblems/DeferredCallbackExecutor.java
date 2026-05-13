@@ -1,139 +1,166 @@
 package problems.ConcurrencyDesignProblems;
 
-import java.util.UUID;
-import java.util.concurrent.DelayQueue;
-import java.util.concurrent.Delayed;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class DeferredCallbackExecutor {
+public class DeferredCallbackExecutor<T> {
+    DelayQueue<DelayedTask<T>> delayQueue;
+    ConcurrentMap<String, CallableTask<T>> concurrentMap;
+    Thread workerThread;
 
-    private final DelayQueue<ScheduledTask> delayQueue = new DelayQueue<>();
-    private final Thread workerThread;
-    private volatile boolean running = true;
+    CancellationStrategy cancellationStrategy;
 
     public DeferredCallbackExecutor() {
-        workerThread = new Thread(this::workerLoop, "DeferredCallbackExecutor-Thread");
-        workerThread.setDaemon(true);
+        this.delayQueue = new DelayQueue<>();
+        concurrentMap = new ConcurrentHashMap<>();
+        workerThread = new Thread(this::runScheduledTask, "WorkerThread");
+        cancellationStrategy = new LazyCancellationStrategy();
+        start();
+    }
+
+    public void start() {
         workerThread.start();
     }
 
-    /**
-     * Schedule a callback to run after the specified delay (in milliseconds).
-     * Returns a unique task ID that can be used for cancellation.
-     */
-    public String schedule(Runnable callback, long delayMs) {
-        long executeAt = System.currentTimeMillis() + delayMs;
-        ScheduledTask task = new ScheduledTask(callback, executeAt);
-        delayQueue.offer(task);
-        return task.getId();
-    }
-
-    /**
-     * Cancel a scheduled callback by taskId.
-     * Returns true if the task was cancelled before execution.
-     */
-    public boolean cancel(String taskId) {
-        // We can't efficiently remove from DelayQueue, so we mark as cancelled.
-        for (ScheduledTask task : delayQueue) {
-            if (task.getId().equals(taskId)) {
-                return task.cancel();
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Stops the executor gracefully.
-     */
     public void shutdown() {
-        running = false;
         workerThread.interrupt();
+        try {
+            workerThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
-    /**
-     * Main worker loop: takes tasks from the DelayQueue and executes them if not cancelled.
-     */
-    private void workerLoop() {
-        while (running) {
+    public void schedule(CallableTask<T> task, long delayInMillis){
+        long executionTimeInMillis = delayInMillis + System.currentTimeMillis();
+        DelayedTask<T> delayedTask = new DelayedTask<>(executionTimeInMillis, task);
+        task.setState(CallableState.SCHEDULED);
+        delayQueue.offer(delayedTask);
+        concurrentMap.putIfAbsent(task.getTaskId(), task);
+    }
+
+    public void cancel(String taskId){
+        cancellationStrategy.cancel(taskId);
+    }
+
+    private void runScheduledTask(){
+        while(!Thread.currentThread().isInterrupted()){
             try {
-                ScheduledTask task = delayQueue.take();  // blocks until next task is due
-                if (task.tryRun()) {
-                    // Successfully executed
-                } else {
-                    // Task was cancelled or already running
+                CallableTask<T> task = delayQueue.take().getTask();
+                if (task.setState(CallableState.RUNNING)){
+                    System.out.println(task.run());
                 }
             } catch (InterruptedException e) {
-                // If interrupted and not running, exit loop
-                if (!running) {
-                    break;
-                }
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         }
     }
+    class DelayedTask<V> implements Delayed{
+        private final long executionTimeInMillis;
+        private final CallableTask<V> task;
 
-    /**
-     * Inner class representing a scheduled task.
-     * Implements Delayed for DelayQueue.
-     */
-    private static class ScheduledTask implements Delayed {
-        enum State { SCHEDULED, RUNNING, CANCELLED, COMPLETED }
-
-        private final String id;
-        private final Runnable callback;
-        private final long executeAtMillis;
-        private final AtomicReference<State> state = new AtomicReference<>(State.SCHEDULED);
-
-        public ScheduledTask(Runnable callback, long executeAtMillis) {
-            this.id = UUID.randomUUID().toString();
-            this.callback = callback;
-            this.executeAtMillis = executeAtMillis;
-        }
-
-        public String getId() {
-            return id;
-        }
-
-        /**
-         * Attempt to cancel the task.
-         * Returns true if cancellation succeeded.
-         */
-        public boolean cancel() {
-            return state.compareAndSet(State.SCHEDULED, State.CANCELLED);
-        }
-
-        /**
-         * Attempt to run the task if not cancelled.
-         * Returns true if executed.
-         */
-        public boolean tryRun() {
-            if (!state.compareAndSet(State.SCHEDULED, State.RUNNING)) {
-                return false; // Either cancelled or already running
-            }
-            try {
-                callback.run();
-            } catch (Throwable t) {
-                System.err.println("Callback " + id + " threw exception: " + t);
-            } finally {
-                state.set(State.COMPLETED);
-            }
-            return true;
+        public DelayedTask(long executionTimeInMillis, CallableTask<V> task) {
+            this.executionTimeInMillis = executionTimeInMillis;
+            this.task = task;
         }
 
         @Override
         public long getDelay(TimeUnit unit) {
-            long delay = executeAtMillis - System.currentTimeMillis();
-            return unit.convert(delay, TimeUnit.MILLISECONDS);
+            long diff = executionTimeInMillis - System.currentTimeMillis();
+            return unit.convert(diff, TimeUnit.MILLISECONDS);
         }
 
         @Override
-        public int compareTo(Delayed other) {
-            if (this == other) return 0;
-            if (other instanceof ScheduledTask) {
-                return Long.compare(this.executeAtMillis, ((ScheduledTask) other).executeAtMillis);
+        public int compareTo(Delayed o) {
+            if (o == this) return 0;
+            return Long.compare(this.executionTimeInMillis, ((DelayedTask)o).executionTimeInMillis);
+        }
+
+        public CallableTask<V> getTask() {
+            return task;
+        }
+
+    }
+
+    static class CallableTask<R>{
+        private final String taskId;
+        private final Callable<R> task;
+        private AtomicReference<CallableState> state;
+
+        public CallableTask(String taskId, Callable<R> task) {
+            this.taskId = taskId;
+            this.task = task;
+            this.state = new AtomicReference<>();
+        }
+
+        public String getTaskId() {
+            return taskId;
+        }
+
+        public Callable<R> getTask() {
+            return task;
+        }
+
+        public boolean setState(CallableState newState) {
+            while(true){
+                CallableState oldState = state.get();
+                if (oldState == CallableState.RUNNING || oldState == CallableState.CANCELLED || oldState == CallableState.COMPLETED) return false;
+                if (state.compareAndSet(oldState, newState)){
+                    return true;
+                }
             }
-            long diff = this.getDelay(TimeUnit.MILLISECONDS) - other.getDelay(TimeUnit.MILLISECONDS);
-            return (diff == 0) ? 0 : (diff < 0 ? -1 : 1);
+        }
+
+        public AtomicReference<CallableState> getState() {
+            return state;
+        }
+
+        public R run() throws Exception {
+            R value = task.call();
+            setState(CallableState.COMPLETED);
+            return value;
         }
     }
+
+    enum CallableState {
+        SCHEDULED,
+        RUNNING,
+        COMPLETED,
+        CANCELLED;
+    }
+
+    interface CancellationStrategy{
+        public void cancel(String taskId);
+    }
+
+    class EagerCancellationStrategy implements CancellationStrategy{
+
+        @Override
+        public void cancel(String taskId) {
+            delayQueue.removeIf(delayedTask -> {
+                if (delayedTask.getTask().taskId.equals(taskId)){
+                    return delayedTask.getTask().setState(CallableState.CANCELLED);
+                }
+                return false;
+            });
+            concurrentMap.remove(taskId);
+        }
+    }
+
+    class LazyCancellationStrategy implements CancellationStrategy{
+
+        @Override
+        public void cancel(String taskId) {
+            concurrentMap.computeIfPresent(taskId, (k, v) -> {
+                if (!v.setState(CallableState.CANCELLED)) {
+                    System.out.println(v.getTask()+" cant be CANCELLED as current state is: "+ v.getState().get());
+                }
+                return v;
+            });
+        }
+    }
+
 }
+
