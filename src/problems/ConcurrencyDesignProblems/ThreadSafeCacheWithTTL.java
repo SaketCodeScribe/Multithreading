@@ -1,4 +1,4 @@
-package problems;
+package problems.ConcurrencyDesignProblems;
 
 import java.util.HashMap;
 import java.util.LinkedList;

@@ -1,4 +1,4 @@
-package problems;
+package problems.SynchronizationProblems;
 
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.Condition;

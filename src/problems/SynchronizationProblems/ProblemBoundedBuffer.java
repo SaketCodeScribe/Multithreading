@@ -1,4 +1,4 @@
-package problems;
+package problems.SynchronizationProblems;
 
 import java.util.LinkedList;
 import java.util.Queue;
