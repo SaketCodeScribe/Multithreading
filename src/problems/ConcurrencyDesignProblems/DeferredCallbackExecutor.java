@@ -14,7 +14,7 @@ public class DeferredCallbackExecutor<T> {
         this.delayQueue = new DelayQueue<>();
         concurrentMap = new ConcurrentHashMap<>();
         workerThread = new Thread(this::runScheduledTask, "WorkerThread");
-        cancellationStrategy = new LazyCancellationStrategy();
+        cancellationStrategy = new EagerCancellationStrategy();
         start();
     }
 
@@ -113,8 +113,8 @@ public class DeferredCallbackExecutor<T> {
             }
         }
 
-        public AtomicReference<CallableState> getState() {
-            return state;
+        public CallableState getState() {
+            return state.get();
         }
 
         public R run() throws Exception {
