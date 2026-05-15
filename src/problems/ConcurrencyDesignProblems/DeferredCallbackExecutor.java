@@ -155,7 +155,7 @@ public class DeferredCallbackExecutor<T> {
         public void cancel(String taskId) {
             concurrentMap.computeIfPresent(taskId, (k, v) -> {
                 if (!v.setState(CallableState.CANCELLED)) {
-                    System.out.println(v.getTask()+" cant be CANCELLED as current state is: "+ v.getState().get());
+                    System.out.println(v.getTask()+" cant be CANCELLED as current state is: "+ v.getState());
                 }
                 return v;
             });
