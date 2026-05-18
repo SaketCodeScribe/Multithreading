@@ -3,28 +3,77 @@ package problems.ConcurrencyDesignProblems;
 import java.util.Arrays;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 public class ConcurrentTicketBookingSystem {
 
+    private final ConcurrentMap<String, Task> concurrentMap;
     private final Executor backgroundThread = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "Background thread");
         t.setDaemon(true);
         return t;
     });
+
     private final HoldManager holdManager;
-    public ConcurrentTicketBookingSystem() {
-        holdManager = new HoldManager();
+    public ConcurrentTicketBookingSystem(long delay) {
+        holdManager = new HoldManager(delay);
+        concurrentMap = new ConcurrentHashMap<>();
         backgroundThread.execute(holdManager::clean);
     }
 
-    public void bookSeat(Seat seats){
+    public void bookSeat(Seat[] seats, String id){
+        Task task = new Task(id, seats);
+        if(!tryBookingSeat(seats, SeatState.HELD)){
+            rollback(seats);
+            System.out.println("Seat booking failed");
+        }
+        else{
+            Task existing = concurrentMap.putIfAbsent(id, task);
+            if (existing != null){
+                rollback(seats);
+                return;
+            }
+            holdManager.add(task);
+            System.out.println("Seat booked successfully");
+        }
+    }
 
+    public void makePayment(String id, Function<String, Boolean> payment){
+        Task task = concurrentMap.get(id);
+        if (task != null && payment.apply(id)){
+            if (!tryBookingSeat(task.getSeats(), SeatState.BOOKED)){
+                rollback(task.getSeats());
+                System.out.println("initiate refund!!");
+            }
+            else{
+                concurrentMap.remove(id);
+            }
+        }
+    }
+
+    private void rollback(Seat[] seats) {
+        for(int i = 0; i< seats.length; i++){
+            if (seats[i].getState() == SeatState.HELD){
+                seats[i].changeState(SeatState.AVAILABLE);
+            }
+        }
+    }
+
+    private boolean tryBookingSeat(Seat[] seats, SeatState state) {
+        for(int i = 0; i< seats.length; i++){
+            if (!seats[i].changeState(state)){
+                return false;
+            }
+        }
+        return true;
     }
 
     static class HoldManager{
         private final DelayQueue<DelayedTask> delayQueue;
+        private final long delay;
 
-        public HoldManager() {
+        public HoldManager(long delay) {
+            this.delay = delay;
             this.delayQueue = new DelayQueue<>();
         }
 
@@ -43,30 +92,31 @@ public class ConcurrentTicketBookingSystem {
         }
 
         public void add(Task task){
-            delayQueue.offer(new DelayedTask(System.currentTimeMillis(), task));
+            delayQueue.offer(new DelayedTask(task, delay));
         }
     }
 
     static class DelayedTask implements Delayed{
-        private final long executedTime;
+        private final long expiryTime;
         private final Task task;
 
-        public DelayedTask(long executedTime, Task task) {
-            this.executedTime = executedTime;
+        public DelayedTask(Task task, long delay) {
+            this.expiryTime = System.currentTimeMillis() + delay;
             this.task = task;
         }
 
         @Override
         public long getDelay(TimeUnit unit) {
-            long elapsed = System.currentTimeMillis() - executedTime;
+            long elapsed = expiryTime - System.currentTimeMillis();
             return unit.toMillis(elapsed);
         }
 
         @Override
         public int compareTo(Delayed o) {
-            return this.task.getTaskId().compareTo(((DelayedTask)o).task.getTaskId());
+            return Long.compare(this.expiryTime, ((DelayedTask)o).expiryTime);
         }
     }
+
     static class Task{
         private final String taskId;
         private final Seat[] seats;
@@ -90,16 +140,20 @@ public class ConcurrentTicketBookingSystem {
     static class Seat implements Comparable<Seat>{
         AtomicReference<SeatState> state;
         private final int seatNo;
+        private final String userId;
 
-        public Seat(int seatNo) {
+        public Seat(int seatNo, String userId) {
             this.state = new AtomicReference<>(SeatState.AVAILABLE);
             this.seatNo = seatNo;
+            this.userId = userId;
         }
 
         public boolean changeState(SeatState newState){
             while(true){
                 SeatState oldState = this.state.get();
-                if (oldState != SeatState.BOOKED || oldState == newState) return false;
+                if (oldState == SeatState.AVAILABLE && newState != SeatState.HELD) return false;
+                if (oldState == SeatState.HELD && newState == SeatState.HELD) return false;
+                if (oldState == SeatState.BOOKED) return false;
 
                 if (this.state.compareAndSet(oldState, newState)){
                     return true;
@@ -117,7 +171,7 @@ public class ConcurrentTicketBookingSystem {
 
         @Override
         public int compareTo(Seat o) {
-            return Integer.compare(this.seatNo, o.seatNo)
+            return Integer.compare(this.seatNo, o.seatNo);
         }
     }
 
@@ -128,4 +182,3 @@ public class ConcurrentTicketBookingSystem {
     }
 
 }
-
