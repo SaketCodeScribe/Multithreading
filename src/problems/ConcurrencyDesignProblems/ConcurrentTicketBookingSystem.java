@@ -1,184 +1,221 @@
 package problems.ConcurrencyDesignProblems;
 
-import java.util.Arrays;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 public class ConcurrentTicketBookingSystem {
 
-    private final ConcurrentMap<String, Task> concurrentMap;
-    private final Executor backgroundThread = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "Background thread");
-        t.setDaemon(true);
-        return t;
-    });
-
-    private final HoldManager holdManager;
-    public ConcurrentTicketBookingSystem(long delay) {
-        holdManager = new HoldManager(delay);
-        concurrentMap = new ConcurrentHashMap<>();
-        backgroundThread.execute(holdManager::clean);
-    }
-
-    public void bookSeat(Seat[] seats, String id){
-        Task task = new Task(id, seats);
-        if(!tryBookingSeat(seats, SeatState.HELD)){
-            rollback(seats);
-            System.out.println("Seat booking failed");
-        }
-        else{
-            Task existing = concurrentMap.putIfAbsent(id, task);
-            if (existing != null){
-                rollback(seats);
-                return;
-            }
-            holdManager.add(task);
-            System.out.println("Seat booked successfully");
-        }
-    }
-
-    public void makePayment(String id, Function<String, Boolean> payment){
-        Task task = concurrentMap.get(id);
-        if (task != null && payment.apply(id)){
-            if (!tryBookingSeat(task.getSeats(), SeatState.BOOKED)){
-                rollback(task.getSeats());
-                System.out.println("initiate refund!!");
-            }
-            else{
-                concurrentMap.remove(id);
-            }
-        }
-    }
-
-    private void rollback(Seat[] seats) {
-        for(int i = 0; i< seats.length; i++){
-            if (seats[i].getState() == SeatState.HELD){
-                seats[i].changeState(SeatState.AVAILABLE);
-            }
-        }
-    }
-
-    private boolean tryBookingSeat(Seat[] seats, SeatState state) {
-        for(int i = 0; i< seats.length; i++){
-            if (!seats[i].changeState(state)){
-                return false;
-            }
-        }
-        return true;
-    }
-
-    static class HoldManager{
-        private final DelayQueue<DelayedTask> delayQueue;
+    class SeatManager{
+        private final List<SeatSnapshot> seatSnapshots;
+        private final HoldManager holdManager;
         private final long delay;
+        private final Executor cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            return t;
+        });
 
-        public HoldManager(long delay) {
+        public SeatManager(int noOfSeat, long delay) {
             this.delay = delay;
-            this.delayQueue = new DelayQueue<>();
+            this.holdManager = new HoldManager();
+            this.seatSnapshots = new ArrayList<>();
+            for(int i=0; i<noOfSeat; i++){
+                this.seatSnapshots.add(new SeatSnapshot(i+1));
+            }
+            cleaner.execute(this.holdManager::drain);
         }
 
-        public void clean() {
-            while(true){
-                try {
-                    DelayedTask task = delayQueue.take();
+        public void heldSeat(String userId, int[] seats){
+            final List<Integer> heldSeats = new ArrayList<>();
+            long expiryTime = System.currentTimeMillis() + delay;
 
-                    for(Seat seat:task.task.seats){
-                        seat.changeState(SeatState.AVAILABLE);
-                    }
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
+            for(int seatNo:seats){
+                SeatSnapshot seatSnapshot = seatSnapshots.get(seatNo);
+                if (tryAcquire(seatSnapshot)){
+                    seatSnapshot.setUserId(userId);
+                    seatSnapshot.setExpiryTime(expiryTime);
+                    heldSeats.add(seatNo);
+                }
+                else{
+                    heldSeats.forEach(seat -> clearState(seatSnapshots.get(seat)));
+                    System.out.println("Seat held failed");
+                    break;
                 }
             }
+            long scheduleId = UUID.randomUUID().node();
+            heldSeats.forEach(seat ->  schedule(scheduleId, userId, seatSnapshots.get(seat)));
+            System.out.println("Seat is held");
         }
 
-        public void add(Task task){
-            delayQueue.offer(new DelayedTask(task, delay));
-        }
-    }
-
-    static class DelayedTask implements Delayed{
-        private final long expiryTime;
-        private final Task task;
-
-        public DelayedTask(Task task, long delay) {
-            this.expiryTime = System.currentTimeMillis() + delay;
-            this.task = task;
+        private void schedule(long scheduleId, String userId, SeatSnapshot seatSnapshot) {
+            holdManager.add(new DelayedTask(scheduleId, userId, seatSnapshot));
         }
 
-        @Override
-        public long getDelay(TimeUnit unit) {
-            long elapsed = expiryTime - System.currentTimeMillis();
-            return unit.toMillis(elapsed);
-        }
-
-        @Override
-        public int compareTo(Delayed o) {
-            return Long.compare(this.expiryTime, ((DelayedTask)o).expiryTime);
-        }
-    }
-
-    static class Task{
-        private final String taskId;
-        private final Seat[] seats;
-
-        public String getTaskId() {
-            return taskId;
-        }
-
-        public Seat[] getSeats() {
-            return seats;
-        }
-
-        public Task(String taskId, Seat[] seats) {
-            this.taskId = taskId;
-            Arrays.sort(seats);
-            this.seats = seats;
-        }
-
-    }
-
-    static class Seat implements Comparable<Seat>{
-        AtomicReference<SeatState> state;
-        private final int seatNo;
-        private final String userId;
-
-        public Seat(int seatNo, String userId) {
-            this.state = new AtomicReference<>(SeatState.AVAILABLE);
-            this.seatNo = seatNo;
-            this.userId = userId;
-        }
-
-        public boolean changeState(SeatState newState){
+        public void clearState(SeatSnapshot seatSnapshot){
             while(true){
-                SeatState oldState = this.state.get();
-                if (oldState == SeatState.AVAILABLE && newState != SeatState.HELD) return false;
-                if (oldState == SeatState.HELD && newState == SeatState.HELD) return false;
-                if (oldState == SeatState.BOOKED) return false;
+                String userId = seatSnapshot.getUserId();
+                SeatState oldState = seatSnapshot.getState();
+                if (userId != null && seatSnapshot.getDelay() <= 0){
+                    seatSnapshot.setUserId(userId, null);
+                    seatSnapshot.setState(oldState, SeatState.AVAILABLE);
+                }
+                oldState = seatSnapshot.getState();
+                if (oldState == SeatState.AVAILABLE) break;
+                if (seatSnapshot.setState(oldState, SeatState.AVAILABLE)) break;
+            }
+        }
 
-                if (this.state.compareAndSet(oldState, newState)){
+        public boolean tryAcquire(SeatSnapshot seatSnapshot){
+            while(true){
+                if (seatSnapshot.userId != null && seatSnapshot.getDelay() <= 0){
+                    seatSnapshot.userId = null;
+                    seatSnapshot.setState(SeatState.AVAILABLE);
+                }
+                SeatState oldState = seatSnapshot.getState();
+                if (oldState != SeatState.AVAILABLE) return false;
+                if (seatSnapshot.setState(oldState, SeatState.HELD)){
                     return true;
                 }
             }
         }
+        public void bookSeat(String userId, int[] seats){
+            final List<Integer> heldSeats = new ArrayList<>();
 
-        public int getSeatNo() {
-            return seatNo;
+            for(int seatNo:seats){
+                SeatSnapshot seatSnapshot = seatSnapshots.get(seatNo);
+                if (confirmSeat(seatSnapshot)){
+                    seatSnapshot.setUserId(userId);
+                    heldSeats.add(seatNo);
+                }
+                else{
+                    heldSeats.forEach(seat -> clearState(seatSnapshot));
+                    System.out.println("Seat booking failed");
+                }
+            }
+            System.out.println("Seat is booked");
         }
 
-        public SeatState getState() {
-            return this.state.get();
-        }
-
-        @Override
-        public int compareTo(Seat o) {
-            return Integer.compare(this.seatNo, o.seatNo);
+        private boolean confirmSeat(SeatSnapshot seatSnapshot) {
+            while(true){
+                String userId = seatSnapshot.getUserId();
+                if (userId != null && seatSnapshot.getDelay() <= 0){
+                    seatSnapshot.setUserId(userId, null);
+                    seatSnapshot.setState(SeatState.AVAILABLE);
+                }
+                SeatState oldState = seatSnapshot.getState();
+                if (oldState != SeatState.HELD) return false;
+                if (seatSnapshot.setState(oldState, SeatState.HELD)){
+                    return true;
+                }
+            }
         }
     }
 
+    static class HoldManager{
+        private final DelayQueue<DelayedTask> delayQueue;
+
+        public HoldManager() {
+            this.delayQueue = new DelayQueue<>();
+        }
+
+        public void drain(){
+            while(true){
+                try {
+                    DelayedTask task = delayQueue.take();
+                    clearSeat(task.userId, task.seatSnapshot);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        public void add(DelayedTask task){
+            delayQueue.offer(task);
+        }
+        private void clearSeat(String userId, SeatSnapshot seatSnapshot){
+            while(true){
+                String userIdSnap = seatSnapshot.getUserId();
+                if (!userId.equals(userIdSnap)) return;
+                SeatState oldState = seatSnapshot.getState();
+                if (oldState != SeatState.HELD) return;
+                if (seatSnapshot.setState(oldState, SeatState.AVAILABLE)) return;
+            }
+        }
+    }
+
+    static class DelayedTask implements Delayed{
+        private final long scheduleId;
+        private final String userId;
+        private final SeatSnapshot seatSnapshot;
+
+        public DelayedTask(long scheduleId, String userId, SeatSnapshot seatSnapshot) {
+            this.scheduleId = scheduleId;
+            this.userId = userId;
+            this.seatSnapshot = seatSnapshot;
+        }
+
+        @Override
+        public long getDelay(TimeUnit unit) {
+            return seatSnapshot.getDelay();
+        }
+
+        @Override
+        public int compareTo(Delayed o) {
+            return Long.compare(seatSnapshot.expiryTime, ((DelayedTask)o).seatSnapshot.expiryTime);
+        }
+    }
+    static class SeatSnapshot{
+        private final int seatNo;
+        private AtomicReference<String> userId = new AtomicReference<>();
+        private AtomicReference<SeatState> state = new AtomicReference<>(SeatState.AVAILABLE);
+        private long expiryTime;
+
+        public SeatSnapshot(int seatNo) {
+            this.seatNo = seatNo;
+        }
+
+        public SeatSnapshot(int seatNo, String userId, long expiryTime) {
+            this.seatNo = seatNo;
+            this.userId = new AtomicReference<>(userId);
+            this.expiryTime = expiryTime;
+        }
+
+        public void setExpiryTime(long expiryTime) {
+            this.expiryTime = expiryTime;
+        }
+
+        public void setUserId(String oldId, String newId) {
+            this.userId.compareAndSet(oldId, newId);
+        }
+        public void setUserId(String id) {
+            this.userId.set(id);
+        }
+
+        public String getUserId() {
+            return userId.get();
+        }
+
+        public void setState(SeatState state) {
+            this.state.set(state);
+        }
+
+        public long getDelay(){
+            return expiryTime - System.currentTimeMillis();
+        }
+
+        public SeatState getState() {
+            return state.get();
+        }
+
+        public boolean setState(SeatState oldState, SeatState newState){
+            return this.state.compareAndSet(oldState, newState);
+        }
+    }
     enum SeatState{
         AVAILABLE,
         HELD,
         BOOKED;
     }
-
 }
