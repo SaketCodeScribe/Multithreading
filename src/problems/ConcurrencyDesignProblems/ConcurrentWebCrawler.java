@@ -1,61 +1,82 @@
 package problems.ConcurrencyDesignProblems;
 
-import java.io.IOException;
-import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.*;
 
+/**
+ * 1. Handle race condition for crawled url
+ * 2. Control hitting url from same domain to avoid crawler getting blocked.
+ * 3. graceful shutdown.
+ */
 public class ConcurrentWebCrawler {
-    private final ConcurrentLinkedQueue<URL> buffer;
-    private final ConcurrentHashMap<String, URL> seen;
-    private final List<URL> crawledPages;
+    private final Set<String> visited;
+    private final BlockingQueue<String> frontierQueue;
     private final ExecutorService executorService;
-    private final Semaphore permit, consume;
-    public ConcurrentWebCrawler(int bufferSize, int threadPool) {
-        buffer = new ConcurrentLinkedQueue<>();
-        permit = new Semaphore(bufferSize);
-        consume = new Semaphore(0);
-        executorService = Executors.newFixedThreadPool(threadPool);
-        executorService.execute(this::consumeUrl);
-        seen = new ConcurrentHashMap<>();
-        crawledPages = new CopyOnWriteArrayList<>();
-    }
+    private final ConcurrentMap<String, Semaphore> token;
+    private final ConcurrentLinkedQueue<String> crawledPages;
 
-    public void putURL(URL url){
-        try {
-            permit.acquire();
-            buffer.offer(url);
-            consume.release();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException(e);
+    public ConcurrentWebCrawler(int tPool) {
+        visited = ConcurrentHashMap.newKeySet();
+        frontierQueue = new LinkedBlockingQueue<>();
+        token = new ConcurrentHashMap<>();
+        crawledPages = new ConcurrentLinkedQueue<>();
+        executorService = Executors.newFixedThreadPool(tPool, r -> {
+            Thread workerThread = new Thread(r, "worker Thread");
+            return workerThread;
+        });
+        Crawler crawler = new Crawler();
+        for (int i = 0; i < tPool; i++) {
+            executorService.submit(crawler::crawlPage);
         }
     }
 
-    public void consumeUrl(){
-        try {
-            consume.acquire();
-            crawl(Objects.requireNonNull(buffer.poll()));
-        } catch (InterruptedException | IOException e) {
-            throw new RuntimeException(e);
+    public void add(String url) {
+        if (visited.add(url)) {
+            frontierQueue.offer(url);
         }
-
     }
 
-    private void crawl(URL poll) throws IOException {
+    static class HttpClient {
+        public static List<String> getContents(String url){
+            return new ArrayList<>();
+        }
+        public static String getDomain(String url){
+            return "Url domain";
+        }
+    }
 
-        String[] content = ((String) poll.getContent()).split(" ");
-        for(String cnt:content){
-            if (cnt.contains("//")){
-                URL url = new URL(cnt);
-                if(seen.putIfAbsent(cnt, url) == null) {
-                    putURL(new URL(cnt));
+    class Crawler{
+        public void crawlPage(){
+            while(true){
+                try {
+                    var m = frontierQueue.take();
+                    Semaphore p = token.computeIfAbsent(HttpClient.getDomain(m), x -> new Semaphore(1, true));
+                    try{
+                        p.acquire();
+                        List<String> contents = HttpClient.getContents(m);
+                        crawledPages.add(m);
+                        for (String url : contents) {
+                            if (visited.add(url)) {
+                                add(url);
+                            }
+                        }
+                    } finally {
+                        p.release();
+                    }
+                } catch (InterruptedException e) {
+                    break;
                 }
             }
         }
-        crawledPages.add(poll);
+    }
+    public void shutdown() {
+        executorService.shutdownNow();
+        try {
+            executorService.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
